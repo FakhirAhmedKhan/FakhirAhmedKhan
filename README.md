@@ -1,12 +1,10 @@
-- 👋 Hi, I’m @FakhirAhmedKhan
-- 👀 I’m interested in ...
-- 🌱 I’m currently learning ...
-- 💞️ I’m looking to collaborate on ...
-- 📫 How to reach me ...
-- 😄 Pronouns: ...
-- ⚡ Fun fact: ...
+# 👋 Hi there! I'm Fakhir Ahmed Khan
 
-<!---
-FakhirAhmedKhan/FakhirAhmedKhan is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
-You can click the Preview link to take a look at your changes.
---->
+- 👀 I'm interested in **Web Development, Game Development, and Creative Coding**
+- 🌱 I'm currently learning **HTML, CSS, JavaScript, React, and Next.js**
+- 💞️ I'm looking to collaborate on **open-source web projects and beginner-friendly coding challenges**
+- 📫 How to reach me: **[Email me](mailto:fakhirahmedkhan898@gmail.com)** or connect on [LinkedIn](https://www.linkedin.com/in/fakhirahmedkhan)
+- 😄 Pronouns: **He/Him**
+- ⚡ Fun fact: **I love building projects that mix creativity and code—like games, animations, and portfolio websites!**
+
+
