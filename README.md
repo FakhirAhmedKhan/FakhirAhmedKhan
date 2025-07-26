@@ -8,4 +8,4 @@
 - ⚡ Fun fact: **I love building projects that mix creativity and code—like games, animations, and portfolio websites!**
 
 ![GitHub stats](https://github-readme-stats.vercel.app/api?username=FakhirAhmedKhan&show_icons=true&theme=radical)
-![Top Langs](https://github-readme-stats.vercel.app/api/top-langs/?username=FakhirAhmedKhan&layout=donut)
+![Top Langs](https://github-readme-stats.vercel.app/api/top-langs/?username=FakhirAhmedKhan&langs_count=8)
