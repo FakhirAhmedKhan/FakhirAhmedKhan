@@ -28,9 +28,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 BG_COLOR = (5, 8, 16)          # near-black navy background
-DIGIT_BRIGHT = (57, 255, 140)  # emerald / bright green
-DIGIT_DIM = (12, 90, 55)       # dim green for low-brightness cells
-SCAN_COLOR = (170, 255, 210)   # brighter scan-line highlight
+DIGIT_BRIGHT = (120, 255, 170) # emerald / bright green highlights
+DIGIT_DIM = (10, 60, 38)       # dim green for low-brightness cells (still readable)
+SCAN_COLOR = (200, 255, 225)   # brighter scan-line highlight
 
 
 def load_font(cell_size: int) -> ImageFont.FreeTypeFont:
@@ -84,12 +84,106 @@ def isolate_portrait(image_bgr: np.ndarray) -> np.ndarray:
     return image_bgr[y0:y0 + side, x0:x0 + side]
 
 
-def compute_brightness_grid(image_bgr: np.ndarray, cols: int, rows: int) -> np.ndarray:
-    """Downsample the image to a cols x rows grid of normalized brightness values."""
+def segment_foreground(image_bgr: np.ndarray) -> np.ndarray:
+    """
+    Build a soft head-and-shoulders silhouette mask so the backdrop
+    renders as clean dark navy while the subject (hair, face, shirt,
+    suit) fills the frame.
+
+    Studio headshot backdrops are frequently lit with a gradient/vignette
+    rather than a flat color, which makes pixel-color background removal
+    (chroma-key style, or GrabCut with a generic rectangle) unreliable.
+    Instead we re-run face detection on the already-cropped portrait and
+    draw a deterministic bust shape (an ellipse for the head, a widening
+    trapezoid for the shoulders) sized off the detected face box, then
+    feather the edges. This is robust across lighting/backdrop styles and
+    always produces a clean, recognizable silhouette.
+    """
+    h, w = image_bgr.shape[:2]
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.equalizeHist(gray)
-    small = cv2.resize(gray, (cols, rows), interpolation=cv2.INTER_AREA)
-    return small.astype(np.float32) / 255.0
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    face_cascade = cv2.CascadeClassifier(cascade_path)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+
+    if len(faces) > 0:
+        fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+        fcx, fcy = fx + fw / 2, fy + fh / 2
+    else:
+        fw, fh = w * 0.38, h * 0.38
+        fcx, fcy = w / 2, h * 0.42
+
+    mask = np.zeros((h, w), np.float32)
+
+    # Head: ellipse a little taller than the raw face box to include hair.
+    head_rx, head_ry = int(fw * 0.85), int(fh * 1.15)
+    head_cy = int(fcy - fh * 0.05)
+    cv2.ellipse(mask, (int(fcx), head_cy), (head_rx, head_ry), 0, 0, 360, 1.0, -1)
+
+    # Shoulders: trapezoid widening from just below the chin to the bottom
+    # of the frame, wide enough to read as a shirt/suit silhouette.
+    chin_y = int(fcy + fh * 0.65)
+    shoulder_half_top = fw * 0.62
+    shoulder_half_bottom = fw * 1.55
+    poly = np.array(
+        [
+            [fcx - shoulder_half_top, chin_y],
+            [fcx + shoulder_half_top, chin_y],
+            [min(w, fcx + shoulder_half_bottom), h],
+            [max(0, fcx - shoulder_half_bottom), h],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(mask, poly, 1.0)
+
+    feather = max(3, int(min(h, w) * 0.015)) | 1  # odd kernel size
+    mask = cv2.GaussianBlur(mask, (feather, feather), 0)
+    return np.clip(mask, 0.0, 1.0)
+
+
+def compute_brightness_grid(image_bgr: np.ndarray, cols: int, rows: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Downsample the image to a cols x rows grid of normalized brightness
+    values, restricted to the segmented foreground (the person), so the
+    backdrop renders as clean empty space rather than digit noise.
+
+    Returns (brightness, mask) where mask marks which cells belong to the
+    subject.
+    """
+    fg_mask = segment_foreground(image_bgr)
+
+    gray_u8 = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    gray = gray_u8.astype(np.float32)
+
+    # Contrast-stretch using only foreground pixel statistics so the
+    # backdrop (often mid-gray) doesn't skew the range used by the face,
+    # hair, shirt and suit. This preserves the overall shading (dark suit,
+    # mid-tone skin, bright shirt).
+    fg_pixels = gray[fg_mask.astype(bool)]
+    if fg_pixels.size == 0:
+        fg_pixels = gray.reshape(-1)
+    lo, hi = np.percentile(fg_pixels, 2), np.percentile(fg_pixels, 98)
+    if hi - lo < 1e-3:
+        hi = lo + 1e-3
+    stretched = np.clip((gray - lo) / (hi - lo), 0.0, 1.0)
+    stretched = np.power(stretched, 0.85)
+
+    # Blend in CLAHE local contrast so fine features (eyes, brows, beard,
+    # hairline) stay distinguishable instead of collapsing into flat skin
+    # tone once downsampled to a coarse digit grid.
+    clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(10, 10))
+    local_detail = clahe.apply(gray_u8).astype(np.float32) / 255.0
+
+    combined = np.clip(0.5 * stretched + 0.5 * local_detail, 0.0, 1.0)
+
+    # Punch up overall contrast around the midpoint so eyes, brows, beard
+    # and shirt/suit edges read clearly instead of blending into a flat
+    # mid-tone once reduced to a coarse digit grid.
+    combined = np.clip((combined - 0.5) * 1.6 + 0.5, 0.0, 1.0)
+
+    small = cv2.resize(combined, (cols, rows), interpolation=cv2.INTER_AREA)
+    small_mask = cv2.resize(fg_mask.astype(np.float32), (cols, rows), interpolation=cv2.INTER_AREA)
+
+    return small, small_mask
 
 
 def render_frame(
@@ -108,11 +202,12 @@ def render_frame(
     for r in range(rows):
         for c in range(cols):
             b = brightness[r, c]
-            if b < 0.12:
-                continue  # keep background clean where the portrait is dark/empty
+            if b < 0.05:
+                continue  # keep background clean where the portrait is truly empty
 
             digit = "1" if digits[r, c] else "0"
-            t = min(1.0, b * 1.3)
+            t = min(1.0, b) ** 0.7
+            t = 0.15 + 0.85 * t  # floor so mid/low tones stay clearly readable
             color = tuple(int(DIGIT_DIM[i] + (DIGIT_BRIGHT[i] - DIGIT_DIM[i]) * t) for i in range(3))
 
             if scan_row is not None and abs(r - scan_row) <= 1:
@@ -130,7 +225,7 @@ def generate_binary_face(
     input_path: str,
     output_path: str,
     size: int = 640,
-    cell_size: int = 10,
+    cell_size: int = 8,
     frame_count: int = 12,
     frame_duration_ms: int = 90,
     seed: int = 42,
@@ -151,7 +246,10 @@ def generate_binary_face(
     rows = size // cell_size
     canvas_size = cols * cell_size
 
-    brightness = compute_brightness_grid(portrait, cols, rows)
+    brightness, fg_mask = compute_brightness_grid(portrait, cols, rows)
+    # Zero out the backdrop so only the person (hair, face, shirt, suit)
+    # renders as digits, keeping the background clean dark navy.
+    brightness = brightness * np.clip(fg_mask * 1.6, 0.0, 1.0)
     font = load_font(cell_size)
 
     rng = np.random.default_rng(seed)
@@ -185,7 +283,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("input", help="Path to the source portrait image")
     parser.add_argument("output", help="Path to write the output GIF")
     parser.add_argument("--size", type=int, default=640, help="Output canvas size in pixels (default: 640)")
-    parser.add_argument("--cell-size", type=int, default=10, help="Size of each digit cell in pixels (default: 10)")
+    parser.add_argument("--cell-size", type=int, default=8, help="Size of each digit cell in pixels (default: 8)")
     parser.add_argument("--frames", type=int, default=12, help="Number of animation frames (default: 12)")
     parser.add_argument("--duration", type=int, default=90, help="Frame duration in milliseconds (default: 90)")
     return parser.parse_args(argv)
